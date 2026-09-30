@@ -149,6 +149,40 @@ static int16_t mode_for_effect_id(uint8_t id) {
     return -1;
 }
 
+#ifdef HOSTRGB_DEBUG
+#    include <hal.h>
+// Diagnostic command 0x7E. Sub 0: flash descriptor seen now and FMC registers. Sub 1 addr32: 24 bytes
+// read from the memory-mapped flash.
+static uint8_t handle_debug(const uint8_t *args, uint8_t *out) {
+    if (args[1] == 0) {
+        const flash_descriptor_t *desc = efl_lld_get_descriptor(&EFLD1);
+        uint32_t values[6] = {(uint32_t)desc->size, (uint32_t)desc->sectors_count, FMC->ISPCON, FMC->DFBADR, (uint32_t)EFLD1.state, CLK->AHBCLK};
+        memcpy(out, values, sizeof(values));
+        return 0;
+    }
+    if (args[1] == 2) {
+        // Controlled erase + program of sector 124 (0xF800, first sector of the wear-leveling store).
+        uint32_t       values[7] = {0};
+        const uint32_t pattern   = 0x12345678;
+        BaseFlash     *flash     = (BaseFlash *)(void *)&EFLD1;
+        values[0]                = eflStart(&EFLD1, NULL);
+        values[1]                = FMC->ISPCON;
+        values[2]                = flashStartEraseSector(flash, 124);
+        values[3]                = flashWaitErase(flash);
+        values[4]                = flashProgram(flash, 0xF800, 4, (const uint8_t *)&pattern);
+        values[5]                = *(volatile const uint32_t *)0xF800;
+        eflStop(&EFLD1);
+        values[6] = CLK->AHBCLK;
+        memcpy(out, values, sizeof(values));
+        return 0;
+    }
+    uint32_t addr;
+    memcpy(&addr, &args[2], 4);
+    memcpy(out, (const void *)addr, 24);
+    return 0;
+}
+#endif
+
 static uint8_t handle_command(uint8_t *data, uint8_t length) {
     uint8_t args[32]; // replies overwrite the request in place
     memcpy(args, data, length);
@@ -260,6 +294,10 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
             dirty = false;
             return STATUS_OK;
 
+#ifdef HOSTRGB_DEBUG
+        case 0x7E:
+            return handle_debug(args, out);
+#endif
         default:
             return STATUS_UNKNOWN_COMMAND;
     }

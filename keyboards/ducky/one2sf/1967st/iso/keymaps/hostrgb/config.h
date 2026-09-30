@@ -23,8 +23,11 @@
 // QMK keys the NUC123 value on QMK_MCU_FAMILY_NUC123, but this MCU builds as family NUMICRO:
 // the ChibiOS EFL driver programs 32-bit words (NUC123_PAGE_SIZE).
 #define BACKING_STORE_WRITE_SIZE 4
-// APROM size of the NUC123SD4AN0 (NUC123_FLASH_SIZE); the store takes its last 2 KB.
-#define WEAR_LEVELING_EFL_FLASH_SIZE 0x11000
+// Programmable APROM: 64 KB. The 68 KB part keeps 4 KB of data flash at 0x1F000 (CONFIG0 DFVSEN), and the
+// ChibiOS EFL descriptor can report a larger size at boot (it reads CONFIG0 through ISP while ISP is off),
+// which put the store at 0x10800, past the end of APROM, where every write failed silently.
+// With 0x10000 the store is always the last 2 KB of APROM: 0xF800-0xFFFF (firmware must stay below 0xF800).
+#define WEAR_LEVELING_EFL_FLASH_SIZE 0x10000
 
 // Effects exposed by the protocol (keyboard.json already enables breathing, cycle_all,
 // cycle_left_right, rainbow_moving_chevron and band_sat).
@@ -39,3 +42,5 @@
 #define ENABLE_RGB_MATRIX_MULTISPLASH
 #define ENABLE_RGB_MATRIX_TYPING_HEATMAP
 #define RGB_MATRIX_DEFAULT_MODE RGB_MATRIX_CYCLE_LEFT_RIGHT
+
+// #define HOSTRGB_DEBUG // enables raw HID command 0x7E (flash diagnostics), see hostrgb_protocol.c
