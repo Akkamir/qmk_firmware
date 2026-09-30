@@ -12,7 +12,8 @@
  * LEDs without a custom colour are painted black instead of disabling rgb_matrix.
  * Effect 15 ("heatmap on a background") is QMK's typing heatmap drawn at full brightness over the base
  * colour (whose brightness is set by the user); it shares the QMK mode with effect 13 and is told
- * apart by a flag.
+ * apart by a flag. Effect 16 ("heatmap on custom colours") draws the heat over each key's custom colour,
+ * in the base hue, whitening as keys get hotter; it is told apart by another flag.
  */
 
 #include QMK_KEYBOARD_H
@@ -71,16 +72,19 @@ static const struct {
     {13, RGB_MATRIX_TYPING_HEATMAP},
     {14, RGB_MATRIX_BAND_SAT},
     {15, RGB_MATRIX_TYPING_HEATMAP}, // with BASE_HEATMAP_FLOOR
+    {16, RGB_MATRIX_TYPING_HEATMAP}, // with BASE_HEATMAP_OVERLAY
 };
 #define HEATMAP_ON_BACKGROUND_ID 15
+#define HEATMAP_ON_OVERLAY_ID 16
 #define EFFECT_COUNT ARRAY_SIZE(effects)
 
 #define BASE_ON 0x01
 #define BASE_HEATMAP_FLOOR 0x02
+#define BASE_HEATMAP_OVERLAY 0x04
 
 typedef struct __attribute__((packed)) {
     uint8_t  version;
-    uint8_t  base_flags; // BASE_ON: LEDs without a custom colour show the effect; BASE_HEATMAP_FLOOR: effect 15
+    uint8_t  base_flags; // BASE_ON: LEDs without a custom colour show the effect; BASE_HEATMAP_*: effects 15, 16
     uint8_t  mask[(RGB_MATRIX_LED_COUNT + 7) / 8];
     uint8_t  rgb[RGB_MATRIX_LED_COUNT][3];
     uint16_t checksum;
@@ -146,6 +150,7 @@ void hostrgb_init(void) {
 
 static uint8_t effect_id_for_mode(uint8_t mode) {
     if (mode == RGB_MATRIX_TYPING_HEATMAP && (overlay.base_flags & BASE_HEATMAP_FLOOR)) return HEATMAP_ON_BACKGROUND_ID;
+    if (mode == RGB_MATRIX_TYPING_HEATMAP && (overlay.base_flags & BASE_HEATMAP_OVERLAY)) return HEATMAP_ON_OVERLAY_ID;
     for (uint8_t i = 0; i < EFFECT_COUNT; i++) {
         if (effects[i].mode == mode) return effects[i].id;
     }
@@ -259,7 +264,8 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
         case CMD_SET_BASE: {
             int16_t mode = mode_for_effect_id(args[2]);
             if (mode < 0) return STATUS_BAD_ARGUMENT;
-            overlay.base_flags = (args[1] != 0 ? BASE_ON : 0) | (args[2] == HEATMAP_ON_BACKGROUND_ID ? BASE_HEATMAP_FLOOR : 0);
+            overlay.base_flags = (args[1] != 0 ? BASE_ON : 0) | (args[2] == HEATMAP_ON_BACKGROUND_ID ? BASE_HEATMAP_FLOOR : 0) |
+                                 (args[2] == HEATMAP_ON_OVERLAY_ID ? BASE_HEATMAP_OVERLAY : 0);
             rgb_matrix_enable_noeeprom();
             rgb_matrix_mode_noeeprom(mode);
             rgb_matrix_sethsv_noeeprom(args[3], args[4], args[5]);
@@ -337,6 +343,29 @@ static void paint_heatmap_on_background(uint8_t led_min, uint8_t led_max) {
     }
 }
 
+// Effect 16: each key shows its custom colour (or the base colour) at the base brightness; typing blends
+// in the base hue at full brightness, then whitens it as the key gets hotter.
+static void paint_heatmap_on_overlay(uint8_t led_min, uint8_t led_max) {
+    const hsv_t   base       = rgb_matrix_get_hsv();
+    const rgb_t   background = hsv_to_rgb(base);
+    const uint8_t value      = base.v;
+    for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
+        for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+            uint8_t led = g_led_config.matrix_co[row][col];
+            if (led == NO_LED || led < led_min || led >= led_max) continue;
+            rgb_t bg = background;
+            if (overlay_has(led)) {
+                bg = (rgb_t){.r = scale(overlay.rgb[led][0], value), .g = scale(overlay.rgb[led][1], value), .b = scale(overlay.rgb[led][2], value)};
+            }
+            uint8_t heat   = g_rgb_frame_buffer[row][col];
+            uint8_t amount = (qadd8(170, heat) - 170) * 3;                        // 0..255 over heat 0..85
+            uint8_t white  = qsub8(heat, 85) * 3 / 2;                            // 0..255 over heat 85..255
+            rgb_t   hot    = hsv_to_rgb((hsv_t){base.h, 255 - white, RGB_MATRIX_MAXIMUM_BRIGHTNESS});
+            rgb_matrix_set_color(led, blend8(bg.r, hot.r, amount), blend8(bg.g, hot.g, amount), blend8(bg.b, hot.b, amount));
+        }
+    }
+}
+
 bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     if (host_mode) {
         for (uint8_t led = led_min; led < led_max; led++) {
@@ -346,6 +375,10 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     }
     if ((overlay.base_flags & BASE_ON) && (overlay.base_flags & BASE_HEATMAP_FLOOR) && rgb_matrix_get_mode() == RGB_MATRIX_TYPING_HEATMAP) {
         paint_heatmap_on_background(led_min, led_max);
+    }
+    if ((overlay.base_flags & BASE_ON) && (overlay.base_flags & BASE_HEATMAP_OVERLAY) && rgb_matrix_get_mode() == RGB_MATRIX_TYPING_HEATMAP) {
+        paint_heatmap_on_overlay(led_min, led_max);
+        return false;
     }
     const uint8_t value = rgb_matrix_get_val();
     for (uint8_t led = led_min; led < led_max; led++) {
