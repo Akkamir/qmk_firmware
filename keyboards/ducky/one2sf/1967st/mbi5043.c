@@ -17,6 +17,9 @@
  * The refresh sequence mirrors the stock firmware: per column, 16 bits MSB first with LE held
  * high over the last DCLK edge (data latch), then 2 idle DCLKs and LE high over 3 DCLKs
  * (global latch), then the next row is switched on.
+ *
+ * mbi5043_fade_in() brings published frames up from black over a duration (used when the host
+ * mode hands the LEDs back to the effects, so the lighting does not snap on).
  */
 
 #include "quantum.h"
@@ -35,6 +38,9 @@ static uint16_t        pending[LED_ROWS][LED_COLS][3];     // written by rgb_mat
 static uint8_t         led_row[RGB_MATRIX_LED_COUNT];
 static uint8_t         led_col[RGB_MATRIX_LED_COUNT];
 static volatile uint8_t current_row;
+static bool             fading;
+static uint16_t         fade_start;
+static uint16_t         fade_duration;
 
 static inline void row_write(uint8_t row, uint32_t level) {
     switch (row) {
@@ -155,11 +161,34 @@ static void mbi5043_set_color_all(uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
+void mbi5043_fade_in(uint16_t duration_ms) {
+    fade_start    = timer_read();
+    fade_duration = duration_ms;
+    fading        = duration_ms > 0;
+}
+
 static void mbi5043_flush(void) {
     // rgb_matrix renders effects over several passes and applies indicators last, so only a
     // finished frame may reach the LEDs.
+    uint32_t scale = 0;
+    if (fading) {
+        uint16_t elapsed = timer_elapsed(fade_start);
+        if (elapsed >= fade_duration) {
+            fading = false;
+        } else {
+            scale = gamma16((uint32_t)elapsed * 255 / fade_duration); // perceptually even ramp
+        }
+    }
     osalSysLock();
-    memcpy(framebuffer, pending, sizeof(framebuffer));
+    if (fading) {
+        uint16_t *dst = &framebuffer[0][0][0];
+        uint16_t *src = &pending[0][0][0];
+        for (uint16_t i = 0; i < LED_ROWS * LED_COLS * 3; i++) {
+            dst[i] = (uint32_t)src[i] * scale >> 16;
+        }
+    } else {
+        memcpy(framebuffer, pending, sizeof(framebuffer));
+    }
     osalSysUnlock();
 }
 

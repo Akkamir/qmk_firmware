@@ -29,6 +29,9 @@
 #define HOST_LEDS_PER_REPORT 9
 #define OVERLAY_PER_REPORT 7
 #define EFFECTS_PER_REPORT 28
+#define HOST_EXIT_FADE_MS 1500
+
+void mbi5043_fade_in(uint16_t duration_ms); // LED driver (keyboards/ducky/one2sf/1967st/mbi5043.c)
 
 enum status {
     STATUS_OK              = 0,
@@ -210,10 +213,13 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
             out[1] = RGB_MATRIX_LED_COUNT;
             return STATUS_OK;
 
-        case CMD_MODE:
-            host_mode = args[1] != 0;
+        case CMD_MODE: {
+            bool was_host = host_mode;
+            host_mode     = args[1] != 0;
             if (host_mode) rgb_matrix_enable_noeeprom();
+            if (was_host && !host_mode) mbi5043_fade_in(HOST_EXIT_FADE_MS); // effects come back gently
             return STATUS_OK;
+        }
 
         case CMD_SET: {
             uint8_t first = args[1], count = args[2];
