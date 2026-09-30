@@ -47,7 +47,9 @@
 #define NUC123_SERIAL_CLKSRC NUC123_SERIAL_CLKSRC_HSI
 
 #define NUC123_PWM_USE_PWM1 TRUE
-#define NUC123_GPT_USE_TIMER0 TRUE
+// LED row refresh. Not TIMER0: the NUC123 EFL driver clears APBCLK bit 2 (TMR0_EN) when it stops,
+// using the AHBCLK ISP_EN mask on the wrong register, which would freeze the LEDs after every save.
+#define NUC123_GPT_USE_TIMER1 TRUE
 #define NUC123_EFL_ACCESS_APROM TRUE // LDROM and CONFIG stay inaccessible: the bootloader cannot be touched
 
 #define NUC123_MCUCONF

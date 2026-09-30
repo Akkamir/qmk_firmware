@@ -12,6 +12,8 @@
  *   - PD5 gates LED power, active low;
  *   - LED (row, col) matches the switch matrix (row, col), 15 columns per row.
  *
+ * Rows are refreshed from TIMER1 (see mcuconf.h for why not TIMER0).
+ *
  * The refresh sequence mirrors the stock firmware: per column, 16 bits MSB first with LE held
  * high over the last DCLK edge (data latch), then 2 idle DCLKs and LE high over 3 DCLKs
  * (global latch), then the next row is switched on.
@@ -133,8 +135,8 @@ static void mbi5043_init(void) {
     pwmStart(&PWMD1, &gclk_config);
     pwmEnableChannel(&PWMD1, 0, gclk_config.period / 2);
 
-    gptStart(&GPTD0, &refresh_config);
-    gptStartContinuous(&GPTD0, MBI5043_REFRESH_INTERVAL_US);
+    gptStart(&GPTD1, &refresh_config);
+    gptStartContinuous(&GPTD1, MBI5043_REFRESH_INTERVAL_US);
 
     PD5 = 0; // LED power on
 }
