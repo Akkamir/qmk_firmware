@@ -18,3 +18,5 @@ ARMV = 6
 
 # Needs elevated access to 0416:3f00 on Linux
 PROGRAM_CMD = nu-isp-cli flash $(BUILD_DIR)/$(TARGET).bin
+
+SRC += mbi5043.c
