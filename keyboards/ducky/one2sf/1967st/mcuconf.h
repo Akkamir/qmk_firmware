@@ -48,6 +48,7 @@
 
 #define NUC123_PWM_USE_PWM1 TRUE
 #define NUC123_GPT_USE_TIMER0 TRUE
+#define NUC123_EFL_ACCESS_APROM TRUE // LDROM and CONFIG stay inaccessible: the bootloader cannot be touched
 
 #define NUC123_MCUCONF
 
