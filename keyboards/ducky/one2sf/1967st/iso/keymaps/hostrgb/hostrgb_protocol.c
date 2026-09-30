@@ -10,11 +10,15 @@
  * colours, saved in the user EEPROM block), base effect (rgb_matrix config, saved natively).
  * rgb_matrix only calls the indicator hooks while it is enabled, so "base off" is our own flag:
  * LEDs without a custom colour are painted black instead of disabling rgb_matrix.
+ * Effect 15 ("heatmap on a background") is QMK's typing heatmap drawn at full brightness over the base
+ * colour (whose brightness is set by the user); it shares the QMK mode with effect 13 and is told
+ * apart by a flag.
  */
 
 #include QMK_KEYBOARD_H
 #include <stddef.h>
 #include <string.h>
+#include <lib/lib8tion/lib8tion.h>
 #include "raw_hid.h"
 #include "eeconfig.h"
 #include "hostrgb_protocol.h"
@@ -66,12 +70,17 @@ static const struct {
     {12, RGB_MATRIX_MULTISPLASH},
     {13, RGB_MATRIX_TYPING_HEATMAP},
     {14, RGB_MATRIX_BAND_SAT},
+    {15, RGB_MATRIX_TYPING_HEATMAP}, // with BASE_HEATMAP_FLOOR
 };
+#define HEATMAP_ON_BACKGROUND_ID 15
 #define EFFECT_COUNT ARRAY_SIZE(effects)
+
+#define BASE_ON 0x01
+#define BASE_HEATMAP_FLOOR 0x02
 
 typedef struct __attribute__((packed)) {
     uint8_t  version;
-    uint8_t  base_on; // 0: LEDs without a custom colour stay dark
+    uint8_t  base_flags; // BASE_ON: LEDs without a custom colour show the effect; BASE_HEATMAP_FLOOR: effect 15
     uint8_t  mask[(RGB_MATRIX_LED_COUNT + 7) / 8];
     uint8_t  rgb[RGB_MATRIX_LED_COUNT][3];
     uint16_t checksum;
@@ -93,10 +102,10 @@ static uint16_t overlay_checksum(const overlay_t *block) {
     return sum;
 }
 
-static void overlay_clear(uint8_t base_on) {
+static void overlay_clear(uint8_t base_flags) {
     memset(&overlay, 0, sizeof(overlay));
-    overlay.version = OVERLAY_VERSION;
-    overlay.base_on = base_on;
+    overlay.version    = OVERLAY_VERSION;
+    overlay.base_flags = base_flags;
 }
 
 static bool overlay_has(uint8_t led) {
@@ -122,7 +131,7 @@ static uint8_t overlay_count(void) {
 }
 
 void hostrgb_reset_storage(void) {
-    overlay_clear(1);
+    overlay_clear(BASE_ON);
     overlay.checksum = overlay_checksum(&overlay);
     eeconfig_update_user_datablock(&overlay, 0, sizeof(overlay));
 }
@@ -130,12 +139,13 @@ void hostrgb_reset_storage(void) {
 void hostrgb_init(void) {
     eeconfig_read_user_datablock(&overlay, 0, sizeof(overlay));
     if (overlay.version != OVERLAY_VERSION || overlay.checksum != overlay_checksum(&overlay)) {
-        overlay_clear(1);
+        overlay_clear(BASE_ON);
     }
     dirty = false;
 }
 
 static uint8_t effect_id_for_mode(uint8_t mode) {
+    if (mode == RGB_MATRIX_TYPING_HEATMAP && (overlay.base_flags & BASE_HEATMAP_FLOOR)) return HEATMAP_ON_BACKGROUND_ID;
     for (uint8_t i = 0; i < EFFECT_COUNT; i++) {
         if (effects[i].mode == mode) return effects[i].id;
     }
@@ -234,7 +244,7 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
 
         case CMD_GET_STATE: {
             hsv_t hsv = rgb_matrix_get_hsv();
-            out[0]    = overlay.base_on;
+            out[0]    = (overlay.base_flags & BASE_ON) != 0;
             out[1]    = effect_id_for_mode(rgb_matrix_get_mode());
             out[2]    = hsv.h;
             out[3]    = hsv.s;
@@ -249,7 +259,7 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
         case CMD_SET_BASE: {
             int16_t mode = mode_for_effect_id(args[2]);
             if (mode < 0) return STATUS_BAD_ARGUMENT;
-            overlay.base_on = args[1] != 0;
+            overlay.base_flags = (args[1] != 0 ? BASE_ON : 0) | (args[2] == HEATMAP_ON_BACKGROUND_ID ? BASE_HEATMAP_FLOOR : 0);
             rgb_matrix_enable_noeeprom();
             rgb_matrix_mode_noeeprom(mode);
             rgb_matrix_sethsv_noeeprom(args[3], args[4], args[5]);
@@ -283,7 +293,7 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
         }
 
         case CMD_CLEAR_OVERLAY:
-            overlay_clear(overlay.base_on);
+            overlay_clear(overlay.base_flags);
             dirty = true;
             return STATUS_OK;
 
@@ -312,6 +322,21 @@ static inline uint8_t scale(uint8_t channel, uint8_t value) {
     return (uint16_t)channel * value / 255;
 }
 
+// Effect 15: QMK's heat colours, saturated and at full brightness, over the base colour.
+static void paint_heatmap_on_background(uint8_t led_min, uint8_t led_max) {
+    const hsv_t base       = rgb_matrix_get_hsv();
+    const rgb_t background = hsv_to_rgb(base);
+    for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
+        for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+            uint8_t led = g_led_config.matrix_co[row][col];
+            if (led == NO_LED || led < led_min || led >= led_max || overlay_has(led)) continue;
+            uint8_t heat = g_rgb_frame_buffer[row][col];
+            rgb_t   hot  = hsv_to_rgb((hsv_t){170 - qsub8(heat, 85), 255, scale8((qadd8(170, heat) - 170) * 3, RGB_MATRIX_MAXIMUM_BRIGHTNESS)});
+            rgb_matrix_set_color(led, MAX(hot.r, background.r), MAX(hot.g, background.g), MAX(hot.b, background.b));
+        }
+    }
+}
+
 bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     if (host_mode) {
         for (uint8_t led = led_min; led < led_max; led++) {
@@ -319,11 +344,14 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
         }
         return false;
     }
+    if ((overlay.base_flags & BASE_ON) && (overlay.base_flags & BASE_HEATMAP_FLOOR) && rgb_matrix_get_mode() == RGB_MATRIX_TYPING_HEATMAP) {
+        paint_heatmap_on_background(led_min, led_max);
+    }
     const uint8_t value = rgb_matrix_get_val();
     for (uint8_t led = led_min; led < led_max; led++) {
         if (overlay_has(led)) {
             rgb_matrix_set_color(led, scale(overlay.rgb[led][0], value), scale(overlay.rgb[led][1], value), scale(overlay.rgb[led][2], value));
-        } else if (!overlay.base_on) {
+        } else if (!(overlay.base_flags & BASE_ON)) {
             rgb_matrix_set_color(led, 0, 0, 0);
         }
     }
