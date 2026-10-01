@@ -14,6 +14,11 @@
  * colour (whose brightness is set by the user); it shares the QMK mode with effect 13 and is told
  * apart by a flag. Effect 16 ("heatmap on custom colours") draws the heat over each key's custom colour,
  * in the base hue, whitening as keys get hotter; it is told apart by another flag.
+ *
+ * Agent indicators (protocol v3) are drawn last, above every layer including the host mode: up to 3 LEDs with a
+ * colour, steady or breathing, never saved, cleared when the host has not refreshed them for 5 s. Fn + Delete /
+ * Page Up / Page Down send an unsolicited event report [0x30, 0xA5, slot] to the host (0xA5 is never a status,
+ * so the report cannot be mistaken for a reply). Indicators show only while rgb_matrix is enabled.
  */
 
 #include QMK_KEYBOARD_H
@@ -24,12 +29,16 @@
 #include "eeconfig.h"
 #include "hostrgb_protocol.h"
 
-#define PROTOCOL_VERSION 2
+#define PROTOCOL_VERSION 3
 #define OVERLAY_VERSION 1
 #define HOST_LEDS_PER_REPORT 9
 #define OVERLAY_PER_REPORT 7
 #define EFFECTS_PER_REPORT 28
 #define HOST_EXIT_FADE_MS 1500
+#define INDICATOR_COUNT 3
+#define INDICATOR_TIMEOUT_MS 5000
+#define EVENT_AGENT_KEY 0x30
+#define EVENT_MARKER 0xA5
 
 void mbi5043_fade_in(uint16_t duration_ms); // LED driver (keyboards/ducky/one2sf/1967st/mbi5043.c)
 
@@ -53,7 +62,23 @@ enum command {
     CMD_SET_OVERLAY   = 0x15,
     CMD_CLEAR_OVERLAY = 0x16,
     CMD_SAVE          = 0x17,
+    CMD_SET_INDICATORS = 0x18,
 };
+
+enum indicator_mode {
+    INDICATOR_STEADY    = 0,
+    INDICATOR_BREATHING = 1,
+};
+
+typedef struct {
+    uint8_t led;
+    uint8_t rgb[3];
+    uint8_t mode;
+} indicator_t;
+
+static indicator_t indicators[INDICATOR_COUNT];
+static uint8_t     indicator_count;
+static uint32_t    indicators_at;
 
 // Stable ids exposed to the host; QMK mode numbers depend on which effects are compiled in.
 static const struct {
@@ -309,6 +334,22 @@ static uint8_t handle_command(uint8_t *data, uint8_t length) {
             dirty = true;
             return STATUS_OK;
 
+        case CMD_SET_INDICATORS: {
+            uint8_t count = args[1];
+            if (count > INDICATOR_COUNT) return STATUS_BAD_ARGUMENT;
+            for (uint8_t i = 0; i < count; i++) {
+                const uint8_t *entry = &args[2 + 5 * i];
+                if (entry[0] >= RGB_MATRIX_LED_COUNT || entry[4] > INDICATOR_BREATHING) return STATUS_BAD_ARGUMENT;
+            }
+            for (uint8_t i = 0; i < count; i++) {
+                const uint8_t *entry = &args[2 + 5 * i];
+                indicators[i]        = (indicator_t){.led = entry[0], .rgb = {entry[1], entry[2], entry[3]}, .mode = entry[4]};
+            }
+            indicator_count = count;
+            indicators_at   = timer_read32();
+            return STATUS_OK;
+        }
+
         case CMD_SAVE:
             overlay.checksum = overlay_checksum(&overlay);
             eeconfig_update_user_datablock(&overlay, 0, sizeof(overlay));
@@ -372,19 +413,36 @@ static void paint_heatmap_on_overlay(uint8_t led_min, uint8_t led_max) {
     }
 }
 
-bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
+void hostrgb_agent_key(uint8_t slot) {
+    uint8_t report[32] = {EVENT_AGENT_KEY, EVENT_MARKER, slot};
+    raw_hid_send(report, sizeof(report));
+}
+
+// Agent indicators, above everything. Breathing goes from 30 % to 100 % over ~2 s.
+static void paint_indicators(uint8_t led_min, uint8_t led_max) {
+    if (indicator_count && timer_elapsed32(indicators_at) > INDICATOR_TIMEOUT_MS) indicator_count = 0; // host gone
+    const uint8_t breath = 77 + scale8(sin8(timer_read() / 8), 178);
+    for (uint8_t i = 0; i < indicator_count; i++) {
+        const indicator_t *indicator = &indicators[i];
+        if (indicator->led < led_min || indicator->led >= led_max) continue;
+        const uint8_t level = indicator->mode == INDICATOR_BREATHING ? breath : 255;
+        rgb_matrix_set_color(indicator->led, scale8(indicator->rgb[0], level), scale8(indicator->rgb[1], level), scale8(indicator->rgb[2], level));
+    }
+}
+
+static void paint_layers(uint8_t led_min, uint8_t led_max) {
     if (host_mode) {
         for (uint8_t led = led_min; led < led_max; led++) {
             rgb_matrix_set_color(led, host_colors[led][0], host_colors[led][1], host_colors[led][2]);
         }
-        return false;
+        return;
     }
     if ((overlay.base_flags & BASE_ON) && (overlay.base_flags & BASE_HEATMAP_FLOOR) && rgb_matrix_get_mode() == RGB_MATRIX_TYPING_HEATMAP) {
         paint_heatmap_on_background(led_min, led_max);
     }
     if ((overlay.base_flags & BASE_ON) && (overlay.base_flags & BASE_HEATMAP_OVERLAY) && rgb_matrix_get_mode() == RGB_MATRIX_TYPING_HEATMAP) {
         paint_heatmap_on_overlay(led_min, led_max);
-        return false;
+        return;
     }
     const uint8_t value = rgb_matrix_get_val();
     for (uint8_t led = led_min; led < led_max; led++) {
@@ -394,5 +452,10 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
             rgb_matrix_set_color(led, 0, 0, 0);
         }
     }
+}
+
+bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
+    paint_layers(led_min, led_max);
+    paint_indicators(led_min, led_max);
     return false;
 }

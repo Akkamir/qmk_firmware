@@ -10,6 +10,13 @@ enum Layer {
     _COLOUR
 };
 
+// Fn + Delete / Page Up / Page Down: show the Claude Code session of that agent indicator.
+enum custom_keycodes {
+    AGENT_1 = SAFE_RANGE,
+    AGENT_2,
+    AGENT_3,
+};
+
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
     [_QWERTY] = LAYOUT(
@@ -21,9 +28,9 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     ),
 
     [_FUNCTION] = LAYOUT(
-        KC_GRV,  KC_F1,   KC_F2,   KC_F3,   KC_F4,   KC_F5,   KC_F6,   KC_F7,   KC_F8,   KC_F9,   KC_F10,  KC_F11,  KC_F12,  KC_DEL,  _______,
-        _______, MS_BTN1, MS_UP,   MS_BTN2, MS_WHLU, _______, KC_INS,  _______, KC_UP,   KC_PAUS, KC_PGUP, KC_HOME, KC_PSCR,          KC_HOME,
-        _______, MS_LEFT, MS_DOWN, MS_RGHT, MS_WHLD, _______, KC_SCRL, KC_LEFT, KC_DOWN, KC_RGHT, KC_PGDN, KC_END,  _______, _______, KC_END,
+        KC_GRV,  KC_F1,   KC_F2,   KC_F3,   KC_F4,   KC_F5,   KC_F6,   KC_F7,   KC_F8,   KC_F9,   KC_F10,  KC_F11,  KC_F12,  KC_DEL,  AGENT_1,
+        _______, MS_BTN1, MS_UP,   MS_BTN2, MS_WHLU, _______, KC_INS,  _______, KC_UP,   KC_PAUS, KC_PGUP, KC_HOME, KC_PSCR,          AGENT_2,
+        _______, MS_LEFT, MS_DOWN, MS_RGHT, MS_WHLD, _______, KC_SCRL, KC_LEFT, KC_DOWN, KC_RGHT, KC_PGDN, KC_END,  _______, _______, AGENT_3,
         _______, _______, RM_TOGG, RM_NEXT, RM_HUEU, RM_HUED, RM_SATU, RM_SATD, KC_MUTE, KC_VOLD, KC_VOLU, _______, _______, _______,
         _______, _______, _______,                            QK_BOOT,                   MO(2),   _______, _______, _______, _______, _______
     ),
@@ -44,6 +51,14 @@ const key_override_t alt_esc_grave = ko_make_basic(MOD_MASK_ALT, QK_GESC, KC_GRV
 const key_override_t *key_overrides[] = {
     &alt_esc_grave,
 };
+
+bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    if (keycode >= AGENT_1 && keycode <= AGENT_3) {
+        if (record->event.pressed) hostrgb_agent_key(keycode - AGENT_1);
+        return false;
+    }
+    return true;
+}
 
 void keyboard_post_init_user(void) {
     hostrgb_init();
